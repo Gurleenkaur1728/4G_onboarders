@@ -10,52 +10,84 @@ export default function Login() {
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const handleLogin = async (e) => {
-    e.preventDefault();
-    setErr("");
+const handleLogin = async (e) => {
+  e.preventDefault();
+  setErr("");
 
-    if (!username || !password) {
-      setErr("Please enter both email and password");
+  if (!username || !password) {
+    setErr("Please enter both email and password");
+    return;
+  }
+
+  try {
+    setLoading(true);
+
+    // 1) Auth sign-in (Auth → Users)
+    const { data: { user }, error: authError } =
+      await supabase.auth.signInWithPassword({
+        email: username.trim(),
+        password
+      });
+
+    if (authError || !user) {
+      setLoading(false);
+      setErr(authError?.message || "Invalid email or password.");
       return;
     }
 
-    try {
-      setLoading(true);
-      const { data, error } = await supabase
-        .from("users")
-        .select("id, email, role_id") // also grab role_id
-        .eq("email", username.trim())
-        .eq("password", password)
-        .single();
+    // 2) Get profile from *your* table by email (case-insensitive)
+    const { data: profile, error: profErr } = await supabase
+      .from("users")
+      .select("id, name, email, role_id")
+      .ilike("email", username.trim())
+      .maybeSingle();
 
-      setLoading(false);
-
-      if (error) {
-        console.error("Login error:", error);
-        setErr(`Database error: ${error.message}`);
-        return;
-      }
-
-      if (data) {
-        // save session info
-        localStorage.setItem("user", JSON.stringify(data));
-        localStorage.setItem("role_id", data.role_id); // 👈 Save role globally
-
-        // redirect by role
-        if (data.role_id === 1 || data.role_id === 2) {
-          navigate("/admin/dashboard"); // Admin or Super Admin
-        } else {
-          navigate("/home"); // Employee
-        }
-      } else {
-        setErr("Invalid email or password. Please try again.");
-      }
-    } catch (e) {
-      console.error("Unexpected login error:", e);
-      setErr("An unexpected error occurred. Please try again.");
+    if (profErr) {
+      console.warn("Profile fetch error:", profErr.message);
     }
-  };
 
+    const profileId = profile?.id ?? null;
+
+    // 3) Role from user_roles by *profile id*, fallback to users.role_id, default 0
+    let rid = 0;
+    let rtxt = "";
+    if (profileId) {
+      const { data: roleRow } = await supabase
+        .from("user_roles")
+        .select("role_id, role")
+        .eq("user_id", profileId)
+        .maybeSingle();
+      rid = Number(roleRow?.role_id ?? profile?.role_id ?? 0);
+      rtxt = (roleRow?.role ?? "").toLowerCase();
+    } else {
+      rid = Number(profile?.role_id ?? 0);
+    }
+
+    const isAdmin = rid === 1 || rid === 2 || rtxt === "admin" || rtxt === "superadmin";
+
+    // 4) Persist ONCE
+    localStorage.setItem("user", JSON.stringify({ auth_id: user.id, email: user.email }));
+    localStorage.setItem("profile_id", profileId || "");
+    localStorage.setItem("role_id", String(rid));
+    localStorage.setItem("role", rtxt || (isAdmin ? (rid === 2 ? "superadmin" : "admin") : "user"));
+
+    setLoading(false);
+
+    // 5) SINGLE redirect
+    navigate(isAdmin ? "/admin/dashboard" : "/home");
+
+    // optional debug
+    console.log("login:", { auth_id: user.id, profile_id: profileId, rid, rtxt, isAdmin });
+
+  } catch (error) {
+    console.error("Login error:", error);
+    setErr("An unexpected error occurred. Please try again.");
+    setLoading(false);
+  }
+};
+
+
+  
   return (
     <div className="min-h-screen relative overflow-hidden bg-gradient-to-br from-slate-900 via-emerald-900 to-slate-800">
       {/* Animated background */}
